@@ -1,0 +1,5 @@
+to push the results=migrate -path=./cmd/migrations \
+  -database="postgres://postgres:postgres@localhost:5433/files?sslmode=disable" up
+to create migration file=migrate create -seq -ext sql -dir ./cmd/migrations create_files_tables
+
+postgres://postgres:postgres@localhost:5433/files?sslmode=disable

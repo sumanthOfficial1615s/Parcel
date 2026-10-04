@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Phase 0 — Upload Test</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 480px;
+    margin: 60px auto;
+    padding: 0 20px;
+    color: #1a1a1a;
+    background: #fafafa;
+  }
+  h1 { font-size: 19px; margin-bottom: 4px; }
+  p.sub { color: #666; margin-top: 0; font-size: 13px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    padding: 22px;
+    margin-top: 18px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    margin-top: 14px;
+  }
+  label:first-child { margin-top: 0; }
+  input[type="url"], input[type="password"], input[type="datetime-local"] {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid #d5d5d5;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .drop {
+    border: 2px dashed #c9c9c9;
+    border-radius: 8px;
+    padding: 26px 12px;
+    text-align: center;
+    color: #777;
+    cursor: pointer;
+    font-size: 14px;
+    margin-top: 6px;
+  }
+  .drop.drag { border-color: #6b6bff; background: #f3f3ff; }
+  .drop input { display: none; }
+  #fileInfo { margin-top: 8px; font-size: 13px; color: #333; }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 11px;
+    background: #1a1a1a;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .bar-wrap {
+    margin-top: 14px;
+    height: 8px;
+    background: #eee;
+    border-radius: 4px;
+    overflow: hidden;
+    display: none;
+  }
+  .bar { height: 100%; width: 0%; background: #1a1a1a; transition: width .1s linear; }
+  #status { margin-top: 12px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  #status.ok { color: #0a7a2f; }
+  #status.err { color: #c0392b; }
+  .hint { font-size: 11px; color: #999; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Phase 0 — Upload Test</h1>
+<p class="sub">Sends password + expiry first, then the file — matching the handler's metadata-first contract.</p>
+
+<div class="card">
+  <label>Endpoint</label>
+  <input type="url" id="endpoint" value="http://localhost:8080/upload">
+
+  <label>Password</label>
+  <input type="password" id="password" placeholder="required by the handler">
+
+  <label>Expires at</label>
+  <input type="datetime-local" id="expiresAt">
+  <div class="hint">Sent as an RFC3339 string, e.g. 2026-12-31T00:00:00Z</div>
+
+  <label>File</label>
+  <div class="drop" id="drop">
+    <input type="file" id="fileInput">
+    <div id="dropText">Click to choose a file, or drag one here</div>
+    <div id="fileInfo"></div>
+  </div>
+
+  <button id="uploadBtn" disabled>Upload</button>
+
+  <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
+  <div id="status"></div>
+</div>
+
+<script>
+const dropEl = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const fileInfo = document.getElementById('fileInfo');
+const dropText = document.getElementById('dropText');
+const uploadBtn = document.getElementById('uploadBtn');
+const barWrap = document.getElementById('barWrap');
+const bar = document.getElementById('bar');
+const statusEl = document.getElementById('status');
+
+let selectedFile = null;
+
+function humanSize(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, n = bytes;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + units[i];
+}
+
+function setFile(file) {
+  selectedFile = file;
+  dropText.textContent = 'Click to choose a different file';
+  fileInfo.textContent = file.name + '  ·  ' + humanSize(file.size);
+  uploadBtn.disabled = false;
+  statusEl.textContent = '';
+  statusEl.className = '';
+}
+
+dropEl.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => {
+  if (e.target.files[0]) setFile(e.target.files[0]);
+});
+
+['dragover', 'dragenter'].forEach(evt =>
+  dropEl.addEventListener(evt, (e) => { e.preventDefault(); dropEl.classList.add('drag'); })
+);
+['dragleave', 'drop'].forEach(evt =>
+  dropEl.addEventListener(evt, (e) => { e.preventDefault(); dropEl.classList.remove('drag'); })
+);
+dropEl.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) setFile(file);
+});
+
+uploadBtn.addEventListener('click', () => {
+  if (!selectedFile) return;
+  const endpoint = document.getElementById('endpoint').value.trim();
+  const password = document.getElementById('password').value;
+  const expiresAtLocal = document.getElementById('expiresAt').value;
+
+  if (!password) {
+    statusEl.className = 'err';
+    statusEl.textContent = '✗ Password is required by the handler.';
+    return;
+  }
+  if (!expiresAtLocal) {
+    statusEl.className = 'err';
+    statusEl.textContent = '✗ Expiry is required by the handler.';
+    return;
+  }
+
+  // Convert the datetime-local value to an RFC3339 string (e.g. with a Z suffix)
+  const expiresAtIso = new Date(expiresAtLocal).toISOString();
+
+  const formData = new FormData();
+  // ORDER MATTERS: password and expires_at must be appended before myfile,
+  // because the Go handler rejects the request if the file part arrives
+  // before it has seen both metadata fields.
+  formData.append('password', password);
+  formData.append('expires_at', expiresAtIso);
+  formData.append('myfile', selectedFile);
+
+  uploadBtn.disabled = true;
+  barWrap.style.display = 'block';
+  bar.style.width = '0%';
+  statusEl.textContent = 'Uploading...';
+  statusEl.className = '';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', endpoint);
+
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      bar.style.width = ((e.loaded / e.total) * 100).toFixed(1) + '%';
+    }
+  });
+
+  xhr.onload = () => {
+    uploadBtn.disabled = false;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      statusEl.className = 'ok';
+      statusEl.textContent = '✓ ' + xhr.status + '\n' + xhr.responseText;
+    } else {
+      statusEl.className = 'err';
+      statusEl.textContent = '✗ ' + xhr.status + '\n' + xhr.responseText;
+    }
+  };
+
+  xhr.onerror = () => {
+    uploadBtn.disabled = false;
+    statusEl.className = 'err';
+    statusEl.textContent = '✗ Request failed — is the server running and CORS enabled?';
+  };
+
+  xhr.send(formData);
+});
+</script>
+
+</body>
+</html>
