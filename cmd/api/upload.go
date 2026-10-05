@@ -5,28 +5,29 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/minio/minio-go/v7"
+	"golang.org/x/crypto/bcrypt"
+
+	"parcel/internal/storage"
 )
 
-type FileHandler struct {
-	Client *minio.Client
-	Bucket string
-}
-
-func NewFileHandler(client *minio.Client, bucket string) *FileHandler {
-	return &FileHandler{Client: client, Bucket: bucket}
+func respondError(c *gin.Context, status int, msg string) {
+	c.JSON(status, gin.H{"error": msg})
 }
 
 func (a *app) Upload(c *gin.Context) {
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
-		c.String(http.StatusBadRequest, "expected multipart form")
+		respondError(c, http.StatusBadRequest, "expected multipart form")
 		return
 	}
 
-	var password, expiresAt string
+	file := &storage.File{}
+	passwordSet := false
+	expiresAtSet := false
 	fileHandled := false
 	ctx := c.Request.Context()
 
@@ -36,7 +37,7 @@ func (a *app) Upload(c *gin.Context) {
 			break
 		}
 		if err != nil {
-			c.String(http.StatusBadRequest, "malformed multipart")
+			respondError(c, http.StatusBadRequest, "malformed multipart")
 			return
 		}
 
@@ -45,26 +46,48 @@ func (a *app) Upload(c *gin.Context) {
 		case "password":
 			buf, err := io.ReadAll(part)
 			if err != nil {
-				c.String(http.StatusBadRequest, "could not read password field")
+				respondError(c, http.StatusBadRequest, "could not read password field")
 				return
 			}
-			password = string(buf)
+
+			hashedPassword, err := bcrypt.GenerateFromPassword(buf, bcrypt.DefaultCost)
+			if err != nil {
+				respondError(c, http.StatusInternalServerError, "internal error")
+				return
+			}
+			file.PasswordHash = string(hashedPassword)
+			passwordSet = true
 
 		case "expires_at":
 			buf, err := io.ReadAll(part)
 			if err != nil {
-				c.String(http.StatusBadRequest, "could not read expires_at field")
+				respondError(c, http.StatusBadRequest, "could not read expires_at field")
 				return
 			}
-			expiresAt = string(buf)
+
+			parsed, err := time.Parse(time.RFC3339, string(buf))
+			if err != nil {
+				respondError(c, http.StatusBadRequest, "invalid expires_at format")
+				return
+			}
+			file.ExpiresAt = parsed
+			expiresAtSet = true
+
+		case "uploader_name":
+			buf, err := io.ReadAll(part)
+			if err != nil {
+				respondError(c, http.StatusBadRequest, "could not read uploader name")
+				return
+			}
+			file.UploaderName = string(buf)
 
 		default:
-			if password == "" {
-				c.String(http.StatusBadRequest, "password must be sent before the file part")
+			if !passwordSet {
+				respondError(c, http.StatusBadRequest, "password must be sent before the file part")
 				return
 			}
-			if expiresAt == "" {
-				c.String(http.StatusBadRequest, "expires_at must be sent before the file part")
+			if !expiresAtSet {
+				respondError(c, http.StatusBadRequest, "expires_at must be sent before the file part")
 				return
 			}
 			if part.FileName() == "" {
@@ -83,24 +106,32 @@ func (a *app) Upload(c *gin.Context) {
 			}()
 
 			info, err := a.fileHandler.Client.PutObject(ctx, a.fileHandler.Bucket, part.FileName(), pr, -1, minio.PutObjectOptions{})
-
 			if err != nil {
-				c.String(http.StatusInternalServerError, "upload failed")
+				respondError(c, http.StatusInternalServerError, "upload failed")
 				return
 			}
 
-			hash := hex.EncodeToString(hasher.Sum(nil))
+			file.OriginalName = part.FileName()
+			file.StorageKey = info.Key
+			file.SizeBytes = info.Size
+			file.ContentHash = hex.EncodeToString(hasher.Sum(nil))
+
+			if err := a.storage.Files.Upload(ctx, file); err != nil {
+				respondError(c, http.StatusInternalServerError, "could not save file record")
+				return
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"filename":   info.Key,
-				"size":       info.Size,
-				"sha256":     hash,
-				"password":   password,
-				"expires_at": expiresAt,
+				"id":         file.ID,
+				"filename":   file.OriginalName,
+				"size":       file.SizeBytes,
+				"sha256":     file.ContentHash,
+				"expires_at": file.ExpiresAt,
 			})
 		}
 	}
 
 	if !fileHandled {
-		c.String(http.StatusBadRequest, "no file part received")
+		respondError(c, http.StatusBadRequest, "no file part received")
 	}
 }

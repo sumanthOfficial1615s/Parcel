@@ -22,12 +22,10 @@ type FileStore struct {
 	db *sql.DB
 }
 
-// NewFileStore builds a FileStore with its database dependency injected
 func NewFileStore(db *sql.DB) *FileStore {
 	return &FileStore{db: db}
 }
 
-// Upload inserts a new file record and fills in the generated ID
 func (f *FileStore) Upload(ctx context.Context, file *File) error {
 	query := `
 		INSERT INTO files(uploader_name, storage_key, original_name, size_bytes, content_hash, password_hash, expires_at)

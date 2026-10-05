@@ -27,6 +27,15 @@ func DefaultLocalConfig() Config {
 	}
 }
 
+type FileHandler struct {
+	Client *minio.Client
+	Bucket string
+}
+
+func NewFileHandler(client *minio.Client, bucket string) *FileHandler {
+	return &FileHandler{Client: client, Bucket: bucket}
+}
+
 // NewClient connects to MinIO and ensures the target bucket exists
 func NewClient(ctx context.Context, cfg Config) (*minio.Client, error) {
 	client, err := minio.New(cfg.Endpoint, &minio.Options{

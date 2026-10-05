@@ -15,61 +15,55 @@ import (
 )
 
 const (
-	DB_MAX_OPEN_CONN = 30
-	DB_MAX_IDLE_CONN = 30
-	DB_MAX_IDLE_TIME = 15 * time.Minute
+	defaultDBAddr         = "postgres://postgres:postgres@localhost:5433/files?sslmode=disable"
+	defaultDBMaxOpenConns = 30
+	defaultDBMaxIdleConns = 30
+	defaultDBMaxIdleTime  = 15 * time.Minute
 )
 
 type app struct {
 	storage     storage.Storage
-	fileHandler FileHandler
+	fileHandler storage.FileHandler
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("No .env file found")
+	if err := godotenv.Load(); err != nil {
+		log.Println("no .env file found")
 	}
 
 	ctx := context.Background()
-
 	cfg := storage.DefaultLocalConfig()
 
-	client, err := storage.NewClient(ctx, cfg)
+	minioClient, err := storage.NewClient(ctx, cfg)
 	if err != nil {
-		log.Fatal("MinIO setup failed:", err)
+		log.Fatal("minio setup failed:", err)
 	}
 
-	handler := NewFileHandler(client, cfg.Bucket)
+	fileHandler := storage.NewFileHandler(minioClient, cfg.Bucket)
 
-	db, err := db.New(
-		env.GetString("DB_ADDR", "5433"),
-		env.GetInt("DB_MAX_OPEN_CONN", 30),
-		env.GetInt("DB_MAX_IDLE_CONN", 30),
-		env.GetString("DB_MAX_IDLE_TIME", "15m"),
+	database, err := db.New(
+		env.GetString("DB_ADDR", defaultDBAddr),
+		env.GetInt("DB_MAX_OPEN_CONN", defaultDBMaxOpenConns),
+		env.GetInt("DB_MAX_IDLE_CONN", defaultDBMaxIdleConns),
+		env.GetString("DB_MAX_IDLE_TIME", defaultDBMaxIdleTime.String()),
 	)
-
 	if err != nil {
 		log.Fatal("database connection failed:", err)
 	}
+	defer database.Close()
 
-	defer db.Close()
+	store := storage.NewStorage(database)
 
-	store := storage.NewStorage(db)
-
-	app := app{
+	a := app{
 		storage:     store,
-		fileHandler: *handler,
+		fileHandler: *fileHandler,
 	}
 
 	r := gin.Default()
-
 	r.Use(cors.Default())
-
-	r.POST("/upload", app.Upload)
+	r.POST("/upload", a.Upload)
 
 	log.Println("listening on :8080")
-
 	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}

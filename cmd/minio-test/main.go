@@ -12,7 +12,6 @@ import (
 	"parcel/internal/storage"
 )
 
-// main uploads a test object and prints a presigned URL, to verify MinIO works in isolation
 func main() {
 	ctx := context.Background()
 	cfg := storage.DefaultLocalConfig()
