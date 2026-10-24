@@ -30,7 +30,7 @@
     margin-top: 14px;
   }
   label:first-child { margin-top: 0; }
-  input[type="url"], input[type="password"], input[type="datetime-local"] {
+  input[type="url"], input[type="text"], input[type="password"], input[type="datetime-local"] {
     width: 100%;
     padding: 9px 10px;
     border: 1px solid #d5d5d5;
@@ -81,7 +81,7 @@
 <body>
 
 <h1>Phase 0 — Upload Test</h1>
-<p class="sub">Sends password + expiry first, then the file — matching the handler's metadata-first contract.</p>
+<p class="sub">Sends password + expiry (+ optional uploader name) first, then the file — matching the handler's metadata-first contract.</p>
 
 <div class="card">
   <label>Endpoint</label>
@@ -93,6 +93,9 @@
   <label>Expires at</label>
   <input type="datetime-local" id="expiresAt">
   <div class="hint">Sent as an RFC3339 string, e.g. 2026-12-31T00:00:00Z</div>
+
+  <label>Uploader name</label>
+  <input type="text" id="uploaderName" placeholder="optional">
 
   <label>File</label>
   <div class="drop" id="drop">
@@ -156,6 +159,7 @@ uploadBtn.addEventListener('click', () => {
   const endpoint = document.getElementById('endpoint').value.trim();
   const password = document.getElementById('password').value;
   const expiresAtLocal = document.getElementById('expiresAt').value;
+  const uploaderName = document.getElementById('uploaderName').value;
 
   if (!password) {
     statusEl.className = 'err';
@@ -168,15 +172,14 @@ uploadBtn.addEventListener('click', () => {
     return;
   }
 
-  // Convert the datetime-local value to an RFC3339 string (e.g. with a Z suffix)
   const expiresAtIso = new Date(expiresAtLocal).toISOString();
 
   const formData = new FormData();
-  // ORDER MATTERS: password and expires_at must be appended before myfile,
-  // because the Go handler rejects the request if the file part arrives
-  // before it has seen both metadata fields.
   formData.append('password', password);
   formData.append('expires_at', expiresAtIso);
+  if (uploaderName) {
+    formData.append('uploader_name', uploaderName);
+  }
   formData.append('myfile', selectedFile);
 
   uploadBtn.disabled = true;

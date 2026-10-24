@@ -22,8 +22,7 @@ const (
 )
 
 type app struct {
-	storage     storage.Storage
-	fileHandler storage.FileHandler
+	storage storage.Storage
 }
 
 func main() {
@@ -32,38 +31,57 @@ func main() {
 	}
 
 	ctx := context.Background()
-	cfg := storage.DefaultLocalConfig()
 
-	minioClient, err := storage.NewClient(ctx, cfg)
+	// -------------------------
+	// MinIO configuration
+	// -------------------------
+
+	minioConfig := storage.DefaultLocalConfig()
+
+	minioClient, err := storage.NewClient(ctx, minioConfig)
 	if err != nil {
 		log.Fatal("minio setup failed:", err)
 	}
 
-	fileHandler := storage.NewFileHandler(minioClient, cfg.Bucket)
+	// -------------------------
+	// PostgreSQL configuration
+	// -------------------------
 
 	database, err := db.New(
 		env.GetString("DB_ADDR", defaultDBAddr),
 		env.GetInt("DB_MAX_OPEN_CONN", defaultDBMaxOpenConns),
 		env.GetInt("DB_MAX_IDLE_CONN", defaultDBMaxIdleConns),
-		env.GetString("DB_MAX_IDLE_TIME", defaultDBMaxIdleTime.String()),
+		env.GetString(
+			"DB_MAX_IDLE_TIME",
+			defaultDBMaxIdleTime.String(),
+		),
 	)
 	if err != nil {
 		log.Fatal("database connection failed:", err)
 	}
 	defer database.Close()
 
-	store := storage.NewStorage(database)
+	// -------------------------
+	// Application storage
+	// -------------------------
+
+	store := storage.NewStorage(
+		database,
+		minioClient,
+		minioConfig.Bucket,
+	)
 
 	a := app{
-		storage:     store,
-		fileHandler: *fileHandler,
+		storage: store,
 	}
 
 	r := gin.Default()
 	r.Use(cors.Default())
+
 	r.POST("/upload", a.Upload)
 
 	log.Println("listening on :8080")
+
 	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}

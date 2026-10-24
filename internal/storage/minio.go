@@ -16,7 +16,6 @@ type Config struct {
 	Bucket    string
 }
 
-// DefaultLocalConfig returns settings matching docker-compose.yaml
 func DefaultLocalConfig() Config {
 	return Config{
 		Endpoint:  "localhost:9000",
@@ -27,32 +26,50 @@ func DefaultLocalConfig() Config {
 	}
 }
 
-type FileHandler struct {
-	Client *minio.Client
-	Bucket string
-}
+func NewClient(
+	ctx context.Context,
+	cfg Config,
+) (*minio.Client, error) {
 
-func NewFileHandler(client *minio.Client, bucket string) *FileHandler {
-	return &FileHandler{Client: client, Bucket: bucket}
-}
-
-// NewClient connects to MinIO and ensures the target bucket exists
-func NewClient(ctx context.Context, cfg Config) (*minio.Client, error) {
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
-	})
+	client, err := minio.New(
+		cfg.Endpoint,
+		&minio.Options{
+			Creds: credentials.NewStaticV4(
+				cfg.AccessKey,
+				cfg.SecretKey,
+				"",
+			),
+			Secure: cfg.UseSSL,
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("creating minio client: %w", err)
+		return nil, fmt.Errorf(
+			"creating minio client: %w",
+			err,
+		)
 	}
 
-	exists, err := client.BucketExists(ctx, cfg.Bucket)
+	exists, err := client.BucketExists(
+		ctx,
+		cfg.Bucket,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("checking bucket: %w", err)
+		return nil, fmt.Errorf(
+			"checking bucket: %w",
+			err,
+		)
 	}
+
 	if !exists {
-		if err := client.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{}); err != nil {
-			return nil, fmt.Errorf("creating bucket: %w", err)
+		if err := client.MakeBucket(
+			ctx,
+			cfg.Bucket,
+			minio.MakeBucketOptions{},
+		); err != nil {
+			return nil, fmt.Errorf(
+				"creating bucket: %w",
+				err,
+			)
 		}
 	}
 

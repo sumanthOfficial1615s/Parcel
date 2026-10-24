@@ -1,0 +1,237 @@
+1. Content integrity
+You're already doing this.
+
+At upload:
+file
+ ↓
+SHA-256
+ ↓
+PostgreSQL
+
+At verification:
+MinIO object
+ ↓
+SHA-256
+ ↓
+compare
+
+On corruption:
+corrupted = true
+corrupted_at = ...
+
+Then notify the administrator.
+2. Background job system
+Instead of simply running a time.Ticker, build an actual worker system.
+
+For example:
+PostgreSQL / Redis
+       │
+       ▼
+    Job Queue
+       │
+ ┌─────┼─────┐
+ ▼     ▼     ▼
+ W1    W2    W3
+
+Jobs:
+INTEGRITY_CHECK
+FILE_EXPIRY
+OBJECT_CLEANUP
+HASH_RECOMPUTATION
+
+Workers can have:
+- retries
+- exponential backoff
+- concurrency limits
+- job status
+- failed-job tracking
+- graceful shutdown
+This gives you something meaningful to discuss in interviews.
+3. Don't scan every file every time
+Make your integrity system intelligent.
+
+Store:
+last_verified_at
+verification_status
+verification_attempts
+
+Then prioritize:
+Never verified       → HIGH
+Not verified in 7d   → MEDIUM
+Recently verified    → LOW
+
+You could even implement:
+GET /admin/integrity/scan
+
+which schedules a verification job.
+4. File deduplication
+This would be particularly good for your project.
+
+Suppose two users upload:
+A.pdf
+B.pdf
+
+and both contain exactly the same bytes.
+
+Their SHA-256 is identical:
+A.pdf → abc123...
+B.pdf → abc123...
+
+Instead of storing two objects:
+MinIO
+├── object1
+└── object2
+
+you can store one:
+MinIO
+└── abc123...
+
+and have multiple database records reference it.
+
+That's content-addressable storage.
+
+Now your project becomes much more interesting.
+5. Resumable uploads
+Instead of:
+POST /upload
+       ↓
+entire 2 GB file
+
+implement chunked uploads:
+POST /uploads
+
+PUT /uploads/{id}/chunks/0
+PUT /uploads/{id}/chunks/1
+PUT /uploads/{id}/chunks/2
+...
+POST /uploads/{id}/complete
+
+Now a 2 GB upload can fail at 90% without forcing the user to start over.
+
+You can maintain:
+upload_id
+chunk_number
+chunk_size
+received
+checksum
+status
+
+This is very relevant backend/systems work.
+6. Expiration and automatic cleanup
+You already have:
+expires_at
+
+Take advantage of it.
+
+Worker:
+every N minutes
+       ↓
+find expired files
+       ↓
+delete MinIO object
+       ↓
+delete/update DB record
+
+But make deletion reliable.
+
+For example:
+DB says expired
+      ↓
+enqueue DELETE_OBJECT
+      ↓
+worker
+      ↓
+MinIO delete
+      ↓
+mark deleted
+
+If MinIO fails:
+retry → retry → retry
+
+instead of silently losing track of the file.
+7. Garbage collection
+This is another nice systems feature.
+
+Suppose:
+PostgreSQL says:
+object = abc123
+
+but MinIO no longer has it.
+
+Or:
+MinIO has:
+object = xyz789
+
+PostgreSQL has no reference to xyz789
+
+That's an orphaned object.
+
+Create a garbage collector:
+PostgreSQL references
+        ↕
+      compare
+        ↕
+MinIO objects
+
+Then identify:
+missing objects
+orphaned objects
+corrupted objects
+
+This is much more interesting than simply "upload/download files."
+8. Presigned URLs
+You already have experience with these.
+
+Instead of your Go server transferring every byte:
+Client
+  ↓
+Go API
+  ↓
+MinIO
+  ↓
+Go API
+  ↓
+Client
+
+you can do:
+Client
+  ↓
+Go API
+  ↓
+presigned URL
+  ↓
+Client ──────────> MinIO
+
+Your API becomes the control plane while MinIO handles the data plane.
+
+That's a very good systems-design concept to explain in an interview.
+9. Rate limiting
+Add Redis:
+Client
+  ↓
+API
+  ↓
+Redis rate limiter
+  ↓
+MinIO
+
+For example:
+100 requests/minute
+
+or different limits for:
+upload
+download
+delete
+create-upload
+
+Now you're dealing with distributed state rather than just an HTTP server.
+10. Observability
+Add:
+- structured logging
+- request IDs
+- metrics
+- latency measurements
+- upload/download throughput
+- worker metrics
+- failed-job metrics
+- integrity failures

@@ -1,0 +1,1 @@
+ALTER TABLE files ADD COLUMN download_count int DEFAULT 0;

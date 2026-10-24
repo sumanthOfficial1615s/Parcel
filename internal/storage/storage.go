@@ -1,18 +1,25 @@
 package storage
 
 import (
-	"context"
 	"database/sql"
+
+	"github.com/minio/minio-go/v7"
 )
 
 type Storage struct {
-	Files interface {
-		Upload(ctx context.Context, file *File) error
-	}
+	Postgres *FileStore
+	MinIO    *minio.Client
+	Bucket   string
 }
 
-func NewStorage(db *sql.DB) Storage {
+func NewStorage(
+	db *sql.DB,
+	minIO *minio.Client,
+	bucket string,
+) Storage {
 	return Storage{
-		Files: &FileStore{db: db},
+		Postgres: NewFileStore(db),
+		MinIO:    minIO,
+		Bucket:   bucket,
 	}
 }
