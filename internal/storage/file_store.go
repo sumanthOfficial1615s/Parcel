@@ -35,9 +35,7 @@ type FileStore struct {
 }
 
 func NewFileStore(db *sql.DB) *FileStore {
-	return &FileStore{
-		db: db,
-	}
+	return &FileStore{db: db}
 }
 
 func (f *FileStore) Upload(ctx context.Context, file *File) error {
@@ -124,7 +122,6 @@ func (f *FileStore) GetForDownload(
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("file not found")
 		}
-
 		return nil, fmt.Errorf("getting file: %w", err)
 	}
 
@@ -143,7 +140,7 @@ func (f *FileStore) GetForDownload(
 		return &file, ErrFileExpired
 	}
 
-	if file.ExpiresAt != nil && time.Now().After(*file.ExpiresAt) {
+	if file.ExpiresAt != nil && !time.Now().Before(*file.ExpiresAt) {
 		_, err := f.db.ExecContext(
 			ctx,
 			`UPDATE files SET status = 'expired' WHERE id = $1`,
@@ -154,9 +151,60 @@ func (f *FileStore) GetForDownload(
 		}
 
 		file.Status = "expired"
-
 		return &file, ErrFileExpired
 	}
 
 	return &file, nil
+}
+
+func (f *FileStore) GetExpiredStorageKey(
+	ctx context.Context,
+	fileID string,
+) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var storageKey string
+
+	err := f.db.QueryRowContext(
+		ctx,
+		`SELECT storage_key
+		 FROM files
+		 WHERE id = $1
+		   AND expires_at <= NOW()
+		   AND status IN ('clean', 'expired')`,
+		fileID,
+	).Scan(&storageKey)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting expired file: %w", err)
+	}
+
+	return storageKey, nil
+}
+
+func (f *FileStore) MarkExpired(
+	ctx context.Context,
+	fileID string,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := f.db.ExecContext(
+		ctx,
+		`UPDATE files
+		 SET status = 'expired'
+		 WHERE id = $1
+		   AND expires_at <= NOW()
+		   AND status IN ('clean', 'expired')`,
+		fileID,
+	)
+	if err != nil {
+		return fmt.Errorf("marking file expired: %w", err)
+	}
+
+	return nil
 }
