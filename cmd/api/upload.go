@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"parcel/internal/storage"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
-
-	"parcel/internal/storage"
 )
 
 func RespondError(c *gin.Context, status int, msg string) {
@@ -109,7 +109,7 @@ func (a *app) Upload(c *gin.Context) {
 				return
 			}
 
-			file.ExpiresAt = parsed
+			file.ExpiresAt = &parsed
 			expiresAtSet = true
 
 		case "uploader_name":
@@ -151,7 +151,6 @@ func (a *app) Upload(c *gin.Context) {
 			fileHandled = true
 
 			pr, pw := io.Pipe()
-
 			hasher := sha256.New()
 
 			go func() {
@@ -210,7 +209,6 @@ func (a *app) Upload(c *gin.Context) {
 				"size":       file.SizeBytes,
 				"sha256":     file.ContentHash,
 				"expires_at": file.ExpiresAt,
-				"secret":     file.StorageKey,
 			})
 
 			return

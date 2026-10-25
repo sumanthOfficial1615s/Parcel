@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+
 	"parcel/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -10,26 +12,41 @@ import (
 )
 
 func (a *app) Download(c *gin.Context) {
-	var user storage.User
+	var request storage.DownloadRequest
 
-	if err := c.ShouldBindJSON(&user); err != nil {
-		RespondError(c, http.StatusBadRequest, "invalid credentials")
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
 
-	err := a.storage.Postgres.Download(c, &user)
+	file, err := a.storage.Postgres.GetForDownload(
+		c,
+		&request,
+	)
+
 	if err != nil {
-		if user.Expired {
+		if errors.Is(err, storage.ErrFileExpired) && file != nil {
 			err := a.storage.MinIO.RemoveObject(
 				c,
 				a.storage.Bucket,
-				user.StorageKey,
+				file.StorageKey,
 				minio.RemoveObjectOptions{},
 			)
 			if err != nil {
-				RespondError(c, http.StatusInternalServerError, "internal error")
+				RespondError(
+					c,
+					http.StatusInternalServerError,
+					"failed to delete expired file",
+				)
 				return
 			}
+
+			RespondError(
+				c,
+				http.StatusGone,
+				"file has expired",
+			)
+			return
 		}
 
 		RespondError(c, http.StatusBadRequest, err.Error())
@@ -39,32 +56,43 @@ func (a *app) Download(c *gin.Context) {
 	object, err := a.storage.MinIO.GetObject(
 		c,
 		a.storage.Bucket,
-		user.StorageKey,
+		file.StorageKey,
 		minio.GetObjectOptions{},
 	)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, "failed to get file")
+		RespondError(
+			c,
+			http.StatusInternalServerError,
+			"failed to get file",
+		)
 		return
 	}
 	defer object.Close()
 
 	info, err := object.Stat()
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, "failed to get file information")
+		RespondError(
+			c,
+			http.StatusInternalServerError,
+			"failed to get file information",
+		)
 		return
 	}
 
 	c.Header("Accept-Ranges", "bytes")
 	c.Header(
 		"Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s"`, user.OriginalName),
+		fmt.Sprintf(
+			`attachment; filename="%s"`,
+			file.OriginalName,
+		),
 	)
 	c.Header("Content-Type", "application/octet-stream")
 
 	http.ServeContent(
 		c.Writer,
 		c.Request,
-		user.OriginalName,
+		file.OriginalName,
 		info.LastModified,
 		object,
 	)

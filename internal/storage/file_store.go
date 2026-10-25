@@ -3,11 +3,14 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+var ErrFileExpired = errors.New("file has expired")
 
 type File struct {
 	ID           string
@@ -17,23 +20,18 @@ type File struct {
 	SizeBytes    int64
 	ContentHash  string
 	PasswordHash string
-	ExpiresAt    time.Time
+	Status       string
+	ExpiresAt    *time.Time
+	CreatedAt    time.Time
+}
+
+type DownloadRequest struct {
+	FileID   string `json:"file_id"`
+	Password string `json:"password"`
 }
 
 type FileStore struct {
 	db *sql.DB
-}
-
-type User struct {
-	Username       string `json:"name"`
-	Password       string `json:"password"`
-	HashedPassword []byte
-	StorageKey     string
-	Expires_at     time.Time
-	Created_at     time.Time
-	Download_count int
-	Expired        bool
-	Corrupted      bool
 }
 
 func NewFileStore(db *sql.DB) *FileStore {
@@ -51,9 +49,10 @@ func (f *FileStore) Upload(ctx context.Context, file *File) error {
 			size_bytes,
 			content_hash,
 			password_hash,
+			status,
 			expires_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		VALUES ($1, $2, $3, $4, $5, $6, 'clean', $7)
 		RETURNING id
 	`
 
@@ -79,53 +78,85 @@ func (f *FileStore) Upload(ctx context.Context, file *File) error {
 	return nil
 }
 
-func (f *FileStore) Download(ctx context.Context, user *User) error {
-	var userStore User
+func (f *FileStore) GetForDownload(
+	ctx context.Context,
+	request *DownloadRequest,
+) (*File, error) {
+	var file File
 
 	query := `
-        SELECT username, storage_key, password_hash, expires_at, created_at, downloaded
-        FROM files
-        WHERE username = $1
-    `
+		SELECT
+			id,
+			uploader_name,
+			storage_key,
+			original_name,
+			size_bytes,
+			content_hash,
+			password_hash,
+			status,
+			expires_at,
+			created_at
+		FROM files
+		WHERE id = $1
+	`
 
-	Ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	err := f.db.QueryRowContext(
-		Ctx,
+		ctx,
 		query,
-		user.Username,
+		request.FileID,
 	).Scan(
-		&userStore.Username,
-		&userStore.StorageKey,
-		&userStore.HashedPassword,
-		&userStore.Expires_at,
-		&userStore.Created_at,
-		&userStore.Download_count,
+		&file.ID,
+		&file.UploaderName,
+		&file.StorageKey,
+		&file.OriginalName,
+		&file.SizeBytes,
+		&file.ContentHash,
+		&file.PasswordHash,
+		&file.Status,
+		&file.ExpiresAt,
+		&file.CreatedAt,
 	)
 
 	if err != nil {
-		return fmt.Errorf("Enter correct username")
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("file not found")
+		}
 
+		return nil, fmt.Errorf("getting file: %w", err)
 	}
 
-	err = bcrypt.CompareHashAndPassword(userStore.HashedPassword, []byte(user.Password))
-	if err != nil {
-		return fmt.Errorf("enter valid username and password")
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(file.PasswordHash),
+		[]byte(request.Password),
+	); err != nil {
+		return nil, fmt.Errorf("invalid password")
 	}
 
-	if time.Now().After(userStore.Expires_at) {
-		userStore.Expired = true
-		return fmt.Errorf("file as expired")
+	if file.Status == "infected" {
+		return nil, fmt.Errorf("file is unavailable")
 	}
 
-	if userStore.Corrupted == true {
-		return fmt.Errorf("file as been corrupted")
+	if file.Status == "expired" {
+		return &file, ErrFileExpired
 	}
 
-	if userStore.Download_count > 3 {
-		return fmt.Errorf("file as been downloaded")
+	if file.ExpiresAt != nil && time.Now().After(*file.ExpiresAt) {
+		_, err := f.db.ExecContext(
+			ctx,
+			`UPDATE files SET status = 'expired' WHERE id = $1`,
+			file.ID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("updating expired file: %w", err)
+		}
+
+		file.Status = "expired"
+
+		return &file, ErrFileExpired
 	}
 
-	return nil
+	return &file, nil
 }

@@ -32,20 +32,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// -------------------------
-	// MinIO configuration
-	// -------------------------
-
 	minioConfig := storage.DefaultLocalConfig()
 
 	minioClient, err := storage.NewClient(ctx, minioConfig)
 	if err != nil {
 		log.Fatal("minio setup failed:", err)
 	}
-
-	// -------------------------
-	// PostgreSQL configuration
-	// -------------------------
 
 	database, err := db.New(
 		env.GetString("DB_ADDR", defaultDBAddr),
@@ -61,10 +53,6 @@ func main() {
 	}
 	defer database.Close()
 
-	// -------------------------
-	// Application storage
-	// -------------------------
-
 	store := storage.NewStorage(
 		database,
 		minioClient,
@@ -79,6 +67,7 @@ func main() {
 	r.Use(cors.Default())
 
 	r.POST("/upload", a.Upload)
+	r.POST("/download", a.Download)
 
 	log.Println("listening on :8080")
 
