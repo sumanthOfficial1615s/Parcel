@@ -12,19 +12,28 @@ import (
 
 	"parcel/internal/db"
 	"parcel/internal/env"
+	"parcel/internal/scanner"
 	"parcel/internal/storage"
+	"parcel/internal/tasks"
 )
 
 const (
+	defaultServerAddr     = ":8080"
 	defaultDBAddr         = "postgres://postgres:postgres@localhost:5433/files?sslmode=disable"
 	defaultDBMaxOpenConns = 30
 	defaultDBMaxIdleConns = 30
 	defaultDBMaxIdleTime  = 15 * time.Minute
+	defaultRedisAddr      = "localhost:6379"
+	defaultClamAVAddr     = "localhost:3310"
+
+	workerConcurrency = 5
 )
 
+// app holds the dependencies shared by the HTTP handlers.
 type app struct {
-	storage      storage.Storage
-	expiryClient *asynq.Client
+	files   storage.FileStore
+	objects storage.ObjectStore
+	queue   tasks.Enqueuer
 }
 
 func main() {
@@ -34,9 +43,9 @@ func main() {
 
 	ctx := context.Background()
 
-	minioConfig := storage.DefaultLocalConfig()
+	minioConfig := storage.DefaultMinIOConfig()
 
-	minioClient, err := storage.NewClient(ctx, minioConfig)
+	minioClient, err := storage.NewMinIOClient(ctx, minioConfig)
 	if err != nil {
 		log.Fatal("minio setup failed:", err)
 	}
@@ -45,55 +54,55 @@ func main() {
 		env.GetString("DB_ADDR", defaultDBAddr),
 		env.GetInt("DB_MAX_OPEN_CONN", defaultDBMaxOpenConns),
 		env.GetInt("DB_MAX_IDLE_CONN", defaultDBMaxIdleConns),
-		env.GetString(
-			"DB_MAX_IDLE_TIME",
-			defaultDBMaxIdleTime.String(),
-		),
+		env.GetString("DB_MAX_IDLE_TIME", defaultDBMaxIdleTime.String()),
 	)
 	if err != nil {
 		log.Fatal("database connection failed:", err)
 	}
 	defer database.Close()
 
-	store := storage.NewStorage(
-		database,
-		minioClient,
-		minioConfig.Bucket,
-	)
-
 	redisOpt := asynq.RedisClientOpt{
-		Addr: env.GetString("REDIS_ADDR", "localhost:6378"),
+		Addr: env.GetString("REDIS_ADDR", defaultRedisAddr),
 	}
 
-	expiryClient := asynq.NewClient(redisOpt)
-	defer expiryClient.Close()
+	queueClient := asynq.NewClient(redisOpt)
+	defer queueClient.Close()
 
-	if err := expiryClient.Ping(); err != nil {
+	if err := queueClient.Ping(); err != nil {
 		log.Fatal("asynq redis connection failed:", err)
 	}
 
-	a := app{
-		storage:      store,
-		expiryClient: expiryClient,
+	clamav := scanner.NewClamAV(
+		env.GetString("CLAMAV_ADDR", defaultClamAVAddr),
+	)
+
+	if err := clamav.Ping(ctx); err != nil {
+		log.Fatal("ClamAV connection failed:", err)
 	}
 
-	expiryServer := asynq.NewServer(
+	files := storage.NewPostgresFileStore(database)
+	objects := storage.NewMinIOObjectStore(minioClient, minioConfig.Bucket)
+
+	a := app{
+		files:   files,
+		objects: objects,
+		queue:   queueClient,
+	}
+
+	worker := asynq.NewServer(
 		redisOpt,
 		asynq.Config{
-			Concurrency: 5,
+			Concurrency: workerConcurrency,
 		},
 	)
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(
-		TypeDeleteExpiredFile,
-		a.handleDeleteExpiredFile,
-	)
+	tasks.NewProcessor(files, objects, clamav).Register(mux)
 
-	if err := expiryServer.Start(mux); err != nil {
-		log.Fatal("starting expiry worker:", err)
+	if err := worker.Start(mux); err != nil {
+		log.Fatal("starting worker:", err)
 	}
-	defer expiryServer.Shutdown()
+	defer worker.Shutdown()
 
 	r := gin.Default()
 	r.Use(cors.Default())
@@ -101,9 +110,11 @@ func main() {
 	r.POST("/upload", a.Upload)
 	r.POST("/download", a.Download)
 
-	log.Println("listening on :8080")
+	addr := env.GetString("ADDR", defaultServerAddr)
 
-	if err := r.Run(":8080"); err != nil {
+	log.Println("listening on", addr)
+
+	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
 }

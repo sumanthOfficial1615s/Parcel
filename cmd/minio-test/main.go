@@ -14,9 +14,9 @@ import (
 
 func main() {
 	ctx := context.Background()
-	cfg := storage.DefaultLocalConfig()
+	cfg := storage.DefaultMinIOConfig()
 
-	client, err := storage.NewClient(ctx, cfg)
+	client, err := storage.NewMinIOClient(ctx, cfg)
 	if err != nil {
 		log.Fatal("minio setup failed:", err)
 	}

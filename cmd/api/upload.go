@@ -7,24 +7,18 @@ import (
 	"net/http"
 	"time"
 
-	"parcel/internal/storage"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
-)
 
-func RespondError(c *gin.Context, status int, msg string) {
-	c.JSON(status, gin.H{
-		"error": msg,
-	})
-}
+	"parcel/internal/storage"
+	"parcel/internal/tasks"
+)
 
 func (a *app) Upload(c *gin.Context) {
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
-		RespondError(c, http.StatusBadRequest, "expected multipart form")
+		respondError(c, http.StatusBadRequest, "expected multipart form")
 		return
 	}
 
@@ -41,8 +35,9 @@ func (a *app) Upload(c *gin.Context) {
 		if err == io.EOF {
 			break
 		}
+
 		if err != nil {
-			RespondError(c, http.StatusBadRequest, "malformed multipart")
+			respondError(c, http.StatusBadRequest, "malformed multipart")
 			return
 		}
 
@@ -50,7 +45,11 @@ func (a *app) Upload(c *gin.Context) {
 		case "password":
 			buf, err := io.ReadAll(part)
 			if err != nil {
-				RespondError(c, http.StatusBadRequest, "could not read password field")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"could not read password field",
+				)
 				return
 			}
 
@@ -59,7 +58,11 @@ func (a *app) Upload(c *gin.Context) {
 				bcrypt.DefaultCost,
 			)
 			if err != nil {
-				RespondError(c, http.StatusInternalServerError, "internal error")
+				respondError(
+					c,
+					http.StatusInternalServerError,
+					"internal error",
+				)
 				return
 			}
 
@@ -69,18 +72,30 @@ func (a *app) Upload(c *gin.Context) {
 		case "expires_at":
 			buf, err := io.ReadAll(part)
 			if err != nil {
-				RespondError(c, http.StatusBadRequest, "could not read expires_at field")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"could not read expires_at field",
+				)
 				return
 			}
 
 			parsed, err := time.Parse(time.RFC3339, string(buf))
 			if err != nil {
-				RespondError(c, http.StatusBadRequest, "invalid expires_at format")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"invalid expires_at format",
+				)
 				return
 			}
 
 			if !parsed.After(time.Now()) {
-				RespondError(c, http.StatusBadRequest, "expires_at must be in the future")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"expires_at must be in the future",
+				)
 				return
 			}
 
@@ -90,7 +105,11 @@ func (a *app) Upload(c *gin.Context) {
 		case "uploader_name":
 			buf, err := io.ReadAll(part)
 			if err != nil {
-				RespondError(c, http.StatusBadRequest, "could not read uploader name")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"could not read uploader name",
+				)
 				return
 			}
 
@@ -98,13 +117,23 @@ func (a *app) Upload(c *gin.Context) {
 
 		default:
 			if !passwordSet {
-				RespondError(c, http.StatusBadRequest, "password must be sent before the file part")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"password must be sent before the file part",
+				)
 				return
 			}
+
 			if !expiresAtSet {
-				RespondError(c, http.StatusBadRequest, "expires_at must be sent before the file part")
+				respondError(
+					c,
+					http.StatusBadRequest,
+					"expires_at must be sent before the file part",
+				)
 				return
 			}
+
 			if part.FileName() == "" {
 				continue
 			}
@@ -118,6 +147,7 @@ func (a *app) Upload(c *gin.Context) {
 				defer pw.Close()
 
 				mw := io.MultiWriter(pw, hasher)
+
 				if _, err := io.Copy(mw, part); err != nil {
 					pw.CloseWithError(err)
 				}
@@ -125,34 +155,55 @@ func (a *app) Upload(c *gin.Context) {
 
 			storageKey := uuid.New().String()
 
-			info, err := a.storage.MinIO.PutObject(
-				ctx,
-				a.storage.Bucket,
-				storageKey,
-				pr,
-				-1,
-				minio.PutObjectOptions{},
-			)
+			size, err := a.objects.Put(ctx, storageKey, pr)
+			// Unblock the copy goroutine if Put stopped reading early.
+			pr.Close()
 			if err != nil {
-				RespondError(c, http.StatusInternalServerError, "upload failed")
+				respondError(
+					c,
+					http.StatusInternalServerError,
+					"upload failed",
+				)
 				return
 			}
 
 			file.OriginalName = part.FileName()
-			file.StorageKey = info.Key
-			file.SizeBytes = info.Size
+			file.StorageKey = storageKey
+			file.SizeBytes = size
 			file.ContentHash = hex.EncodeToString(hasher.Sum(nil))
 
-			if err := a.storage.Postgres.Upload(ctx, file); err != nil {
-				RespondError(c, http.StatusInternalServerError, "could not save file record")
+			if err := a.files.Create(ctx, file); err != nil {
+				respondError(
+					c,
+					http.StatusInternalServerError,
+					"could not save file record",
+				)
 				return
 			}
 
-			if err := scheduleExpiry(ctx, a.expiryClient, file); err != nil {
-				RespondError(
+			if err := tasks.ScheduleExpiry(
+				ctx,
+				a.queue,
+				file.ID,
+				file.ExpiresAt,
+			); err != nil {
+				respondError(
 					c,
 					http.StatusInternalServerError,
 					"file saved but expiry scheduling failed",
+				)
+				return
+			}
+
+			if err := tasks.ScheduleScan(
+				ctx,
+				a.queue,
+				file.ID,
+			); err != nil {
+				respondError(
+					c,
+					http.StatusInternalServerError,
+					"file saved but scan scheduling failed",
 				)
 				return
 			}
@@ -162,13 +213,19 @@ func (a *app) Upload(c *gin.Context) {
 				"filename":   file.OriginalName,
 				"size":       file.SizeBytes,
 				"sha256":     file.ContentHash,
+				"status":     file.Status,
 				"expires_at": file.ExpiresAt,
 			})
+
 			return
 		}
 	}
 
 	if !fileHandled {
-		RespondError(c, http.StatusBadRequest, "no file part received")
+		respondError(
+			c,
+			http.StatusBadRequest,
+			"no file part received",
+		)
 	}
 }

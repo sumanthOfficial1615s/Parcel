@@ -23,6 +23,7 @@ services:
       timeout: 5s
       retries: 5
 
+
   postgres-files:
     image: postgres:16.3
     container_name: postgres-files
@@ -44,6 +45,48 @@ services:
       timeout: 5s
       retries: 5
 
+
+  redis:
+    image: redis:7-alpine
+    container_name: parcel-redis
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis_data:/data
+
+    command: redis-server --appendonly yes
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: parcel-clamav
+
+    ports:
+      - "3310:3310"
+
+    volumes:
+      - clamav_data:/var/lib/clamav
+
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+    restart: unless-stopped
+
+
 volumes:
   minio_data:
   postgres_files_data:
+  redis_data:
+  clamav_data:
