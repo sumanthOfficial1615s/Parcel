@@ -32,9 +32,10 @@ func (s *PostgresFileStore) Create(ctx context.Context, file *File) error {
 			content_hash,
 			password_hash,
 			status,
-			expires_at
+			expires_at,
+			owner_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
 		RETURNING id
 	`
 
@@ -51,6 +52,7 @@ func (s *PostgresFileStore) Create(ctx context.Context, file *File) error {
 		file.ContentHash,
 		file.PasswordHash,
 		file.ExpiresAt,
+		file.OwnerID,
 	).Scan(&file.ID)
 	if err != nil {
 		return fmt.Errorf("inserting file record: %w", err)
@@ -271,4 +273,69 @@ func (s *PostgresFileStore) MarkExpired(
 	}
 
 	return nil
+}
+
+func (s *PostgresFileStore) ListByOwner(
+	ctx context.Context,
+	ownerID string,
+) ([]FileSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, original_name, size_bytes, status, expires_at, created_at
+		 FROM files
+		 WHERE owner_id = $1
+		 ORDER BY created_at DESC`,
+		ownerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing files: %w", err)
+	}
+	defer rows.Close()
+
+	files := []FileSummary{}
+	for rows.Next() {
+		var f FileSummary
+		if err := rows.Scan(
+			&f.ID, &f.OriginalName, &f.SizeBytes,
+			&f.Status, &f.ExpiresAt, &f.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning file row: %w", err)
+		}
+		files = append(files, f)
+	}
+
+	return files, rows.Err()
+}
+
+// DeleteOwned runs the ownership check inside the DELETE itself,
+// so there is no check-then-act race.
+func (s *PostgresFileStore) DeleteOwned(
+	ctx context.Context,
+	fileID, userID string,
+	isAdmin bool,
+) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	var storageKey string
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`DELETE FROM files
+		 WHERE id = $1 AND (owner_id = $2 OR $3)
+		 RETURNING storage_key`,
+		fileID, userID, isAdmin,
+	).Scan(&storageKey)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrFileNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("deleting file: %w", err)
+	}
+
+	return storageKey, nil
 }

@@ -1,0 +1,2 @@
+ALTER TABLE files DROP COLUMN owner_id;
+DROP TABLE users;

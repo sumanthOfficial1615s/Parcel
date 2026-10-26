@@ -10,6 +10,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/joho/godotenv"
 
+	"parcel/internal/auth"
 	"parcel/internal/db"
 	"parcel/internal/env"
 	"parcel/internal/scanner"
@@ -31,9 +32,11 @@ const (
 
 // app holds the dependencies shared by the HTTP handlers.
 type app struct {
-	files   storage.FileStore
-	objects storage.ObjectStore
-	queue   tasks.Enqueuer
+	files     storage.FileStore
+	users     storage.UserStore
+	objects   storage.ObjectStore
+	queue     tasks.Enqueuer
+	jwtSecret string
 }
 
 func main() {
@@ -42,6 +45,11 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	jwtSecret := env.GetString("JWT_SECRET", "")
+	if err := auth.CheckSecret(jwtSecret); err != nil {
+		log.Fatal(err)
+	}
 
 	minioConfig := storage.DefaultMinIOConfig()
 
@@ -81,12 +89,15 @@ func main() {
 	}
 
 	files := storage.NewPostgresFileStore(database)
+	users := storage.NewPostgresUserStore(database)
 	objects := storage.NewMinIOObjectStore(minioClient, minioConfig.Bucket)
 
 	a := app{
-		files:   files,
-		objects: objects,
-		queue:   queueClient,
+		files:     files,
+		users:     users,
+		objects:   objects,
+		queue:     queueClient,
+		jwtSecret: jwtSecret,
 	}
 
 	worker := asynq.NewServer(
@@ -105,10 +116,24 @@ func main() {
 	defer worker.Shutdown()
 
 	r := gin.Default()
-	r.Use(cors.Default())
 
-	r.POST("/upload", a.Upload)
-	r.POST("/download", a.Download)
+	corsConfig := cors.DefaultConfig()
+	corsConfig.AllowAllOrigins = true
+	corsConfig.AddAllowHeaders("Authorization")
+	corsConfig.AddAllowMethods("DELETE")
+	corsConfig.ExposeHeaders = []string{"Content-Disposition"}
+	r.Use(cors.New(corsConfig))
+
+	// public
+	r.POST("/register", a.Register)
+	r.POST("/login", a.Login)
+	r.POST("/download", a.Download) // still protected by the link password
+
+	// logged-in users only
+	authed := r.Group("/", auth.Required(jwtSecret))
+	authed.POST("/upload", a.Upload)
+	authed.GET("/files", a.ListMyFiles)
+	authed.DELETE("/files/:id", a.DeleteFile)
 
 	addr := env.GetString("ADDR", defaultServerAddr)
 

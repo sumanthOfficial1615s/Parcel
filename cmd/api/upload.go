@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"parcel/internal/auth"
 	"parcel/internal/storage"
 	"parcel/internal/tasks"
 )
@@ -22,7 +23,7 @@ func (a *app) Upload(c *gin.Context) {
 		return
 	}
 
-	file := &storage.File{}
+	file := &storage.File{OwnerID: auth.UserID(c)}
 
 	passwordSet := false
 	expiresAtSet := false
@@ -86,6 +87,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusBadRequest,
 					"invalid expires_at format",
+					err,
 				)
 				return
 			}
@@ -95,6 +97,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusBadRequest,
 					"expires_at must be in the future",
+					err,
 				)
 				return
 			}
@@ -109,6 +112,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusBadRequest,
 					"could not read uploader name",
+					err,
 				)
 				return
 			}
@@ -121,6 +125,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusBadRequest,
 					"password must be sent before the file part",
+					err,
 				)
 				return
 			}
@@ -177,6 +182,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusInternalServerError,
 					"could not save file record",
+					err,
 				)
 				return
 			}
@@ -191,6 +197,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusInternalServerError,
 					"file saved but expiry scheduling failed",
+					err,
 				)
 				return
 			}
@@ -204,6 +211,7 @@ func (a *app) Upload(c *gin.Context) {
 					c,
 					http.StatusInternalServerError,
 					"file saved but scan scheduling failed",
+					err,
 				)
 				return
 			}
@@ -226,6 +234,7 @@ func (a *app) Upload(c *gin.Context) {
 			c,
 			http.StatusBadRequest,
 			"no file part received",
+			err,
 		)
 	}
 }
