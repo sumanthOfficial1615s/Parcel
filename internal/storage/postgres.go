@@ -140,10 +140,45 @@ func (s *PostgresFileStore) GetForDownload(
 	ctx context.Context,
 	request *DownloadRequest,
 ) (*File, error) {
+	file, err := s.getByID(ctx, request.FileID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(file.PasswordHash),
+		[]byte(request.Password),
+	); err != nil {
+		return nil, fmt.Errorf("invalid password")
+	}
+
+	return s.checkAvailable(ctx, file)
+}
+
+func (s *PostgresFileStore) GetAvailable(
+	ctx context.Context,
+	fileID string,
+) (*File, error) {
+	file, err := s.getByID(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.checkAvailable(ctx, file)
+}
+
+func (s *PostgresFileStore) getByID(
+	ctx context.Context,
+	fileID string,
+) (*File, error) {
 	var file File
 
-	query := `
-		SELECT
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT
 			id,
 			uploader_name,
 			storage_key,
@@ -155,16 +190,8 @@ func (s *PostgresFileStore) GetForDownload(
 			expires_at,
 			created_at
 		FROM files
-		WHERE id = $1
-	`
-
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
-
-	err := s.db.QueryRowContext(
-		ctx,
-		query,
-		request.FileID,
+		WHERE id = $1`,
+		fileID,
 	).Scan(
 		&file.ID,
 		&file.UploaderName,
@@ -185,26 +212,29 @@ func (s *PostgresFileStore) GetForDownload(
 		return nil, fmt.Errorf("getting file: %w", err)
 	}
 
-	if err := bcrypt.CompareHashAndPassword(
-		[]byte(file.PasswordHash),
-		[]byte(request.Password),
-	); err != nil {
-		return nil, fmt.Errorf("invalid password")
-	}
+	return &file, nil
+}
 
-	if file.Status == StatusInfected {
+// checkAvailable rejects files that are infected, still being scanned or
+// expired. For expired files it returns the file together with
+// ErrFileExpired so the caller can clean up the stored object.
+func (s *PostgresFileStore) checkAvailable(
+	ctx context.Context,
+	file *File,
+) (*File, error) {
+	switch file.Status {
+	case StatusInfected:
 		return nil, fmt.Errorf("file is unavailable")
-	}
-
-	if file.Status == StatusPending {
+	case StatusPending:
 		return nil, fmt.Errorf("file is still being scanned")
-	}
-
-	if file.Status == StatusExpired {
-		return &file, ErrFileExpired
+	case StatusExpired:
+		return file, ErrFileExpired
 	}
 
 	if file.ExpiresAt != nil && !time.Now().Before(*file.ExpiresAt) {
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+
 		_, err := s.db.ExecContext(
 			ctx,
 			`UPDATE files SET status = 'expired' WHERE id = $1`,
@@ -216,12 +246,11 @@ func (s *PostgresFileStore) GetForDownload(
 
 		file.Status = StatusExpired
 
-		return &file, ErrFileExpired
+		return file, ErrFileExpired
 	}
 
-	return &file, nil
+	return file, nil
 }
-
 func (s *PostgresFileStore) GetExpiredStorageKey(
 	ctx context.Context,
 	fileID string,

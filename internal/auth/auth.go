@@ -32,6 +32,42 @@ func NewToken(secret, userID, role string) (string, error) {
 		SignedString([]byte(secret))
 }
 
+const downloadAudience = "download"
+
+// NewDownloadToken creates a short-lived signed token that allows
+// downloading one specific file without logging in.
+func NewDownloadToken(secret, fileID string, ttl time.Duration) (string, error) {
+	claims := jwt.RegisteredClaims{
+		Subject:   fileID,
+		Audience:  jwt.ClaimStrings{downloadAudience},
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+	}
+
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(secret))
+}
+
+// ParseDownloadToken returns the file id from a valid download token.
+func ParseDownloadToken(secret, tokenString string) (string, error) {
+	claims := &jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		claims,
+		func(t *jwt.Token) (any, error) {
+			return []byte(secret), nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+		jwt.WithAudience(downloadAudience),
+	)
+	if err != nil || !token.Valid || claims.Subject == "" {
+		return "", errors.New("invalid or expired download link")
+	}
+
+	return claims.Subject, nil
+}
+
 // Required is a Gin middleware that rejects requests without a valid
 // "Authorization: Bearer <token>" header. On success it stores the
 // user id and role on the context.
@@ -54,7 +90,7 @@ func Required(secret string) gin.HandlerFunc {
 			jwt.WithValidMethods([]string{"HS256"}),
 			jwt.WithExpirationRequired(),
 		)
-		if err != nil || !token.Valid || claims.Subject == "" {
+		if err != nil || !token.Valid || claims.Subject == "" || len(claims.Audience) > 0 {
 			unauthorized(c, "invalid or expired token")
 			return
 		}

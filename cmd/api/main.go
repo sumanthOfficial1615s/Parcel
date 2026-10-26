@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -104,6 +107,16 @@ func main() {
 		redisOpt,
 		asynq.Config{
 			Concurrency: workerConcurrency,
+			// Background task failures never reach an HTTP response,
+			// so log them here.
+			ErrorHandler: asynq.ErrorHandlerFunc(
+				func(ctx context.Context, task *asynq.Task, err error) {
+					slog.Error("background task failed",
+						"type", task.Type(),
+						"error", err,
+					)
+				},
+			),
 		},
 	)
 
@@ -115,7 +128,17 @@ func main() {
 	}
 	defer worker.Shutdown()
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
+		path := p.Path
+		if strings.HasPrefix(path, "/download/") {
+			path = "/download/:token" // active download links must not end up in logs
+		}
+		return fmt.Sprintf("[GIN] %s | %d | %s | %s | %s %q\n",
+			p.TimeStamp.Format("2006/01/02 - 15:04:05"),
+			p.StatusCode, p.Latency, p.ClientIP, p.Method, path)
+	}))
 
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowAllOrigins = true
@@ -127,7 +150,8 @@ func main() {
 	// public
 	r.POST("/register", a.Register)
 	r.POST("/login", a.Login)
-	r.POST("/download", a.Download) // still protected by the link password
+	r.POST("/download", a.Download)           // checks the file password, returns a download URL
+	r.GET("/download/:token", a.DownloadFile) // streams the file, supports Range (resume)
 
 	// logged-in users only
 	authed := r.Group("/", auth.Required(jwtSecret))

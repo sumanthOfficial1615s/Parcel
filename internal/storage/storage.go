@@ -74,6 +74,11 @@ type FileStore interface {
 	// caller's, so the two cases look the same from outside.
 	DeleteOwned(ctx context.Context, fileID, userID string, isAdmin bool) (string, error)
 
+	// GetAvailable does the same availability checks without a password.
+	// Use it only after the caller has proven access some other way
+	// (for example with a signed download link).
+	GetAvailable(ctx context.Context, fileID string) (*File, error)
+
 	// GetPendingStorageKey returns the storage key of a file that is
 	// still waiting for its virus scan.
 	GetPendingStorageKey(ctx context.Context, fileID string) (string, error)
